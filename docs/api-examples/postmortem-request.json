@@ -1,0 +1,10 @@
+{
+  "incidentId": "INC-001",
+  "serviceName": "Checkout API",
+  "symptoms": "High latency and database connection timeouts",
+  "actualRootCause": "Database connection leak in unclosed transaction block",
+  "successfulFix": "Corrected connection lifecycle handling and ensured session closure",
+  "failedApproaches": "Increasing database connection pool size",
+  "preventionStrategy": "Added HikariCP connection leak detection threshold monitoring",
+  "lessonsLearned": "Check connection lifecycle handling before increasing pool capacity"
+}
