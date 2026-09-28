@@ -48,8 +48,8 @@ public class PostmortemService {
         // [POSTMORTEM] Received postmortem
         log.info("[POSTMORTEM] Received postmortem");
 
-        // [MEMORY] Retaining incident knowledge
-        log.info("[MEMORY] Retaining incident knowledge");
+        // [MEMORY] Retaining incident learning
+        log.info("[MEMORY] Retaining incident learning");
         String retentionId;
         String retentionStatus;
         try {
