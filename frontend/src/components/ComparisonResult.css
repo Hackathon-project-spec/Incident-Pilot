@@ -1,0 +1,99 @@
+/* src/components/ComparisonResult.css */
+
+.comparison-result {
+  margin-top: var(--spacing);
+}
+
+.cmp-header {
+  text-align: center;
+  margin-bottom: var(--spacing);
+}
+
+.cmp-header h2 {
+  margin: 0;
+  color: var(--color-primary);
+}
+
+.service-info {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.severity-badge {
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius);
+  font-weight: 600;
+  text-transform: uppercase;
+  background: var(--color-muted);
+  color: var(--color-on-muted);
+}
+
+.severity-high { background: #e53935; color: #fff; }
+.severity-medium { background: #fb8c00; color: #fff; }
+.severity-low { background: #43a047; color: #fff; }
+/* fallback for unknown */
+.severity-undefined { background: var(--color-muted); }
+
+.advantage-banner {
+  margin-top: var(--spacing);
+  padding: 0.5rem 1rem;
+  background: var(--color-success);
+  color: var(--color-on-success);
+  border-radius: var(--radius);
+  display: inline-block;
+}
+
+.advantage-banner .checkmark {
+  font-weight: bold;
+  margin-right: 0.5rem;
+}
+
+.advantage-banner .subtext {
+  margin: 0.3rem 0 0;
+  font-size: 0.9rem;
+}
+
+.comparison-grid {
+  display: flex;
+  gap: var(--spacing);
+  flex-wrap: wrap;
+}
+
+.panel {
+  flex: 1 1 45%;
+  background: var(--color-surface);
+  border: 1px solid var(--color-muted);
+  border-radius: var(--radius);
+  padding: var(--spacing);
+}
+
+.panel.left {
+  /* subtle background */
+}
+
+.panel.right {
+  border-color: var(--color-primary);
+  background: var(--color-primary-10); /* lighter tint if defined */
+}
+
+.panel h3 {
+  margin-top: 0;
+  color: var(--color-primary);
+  text-align: center;
+}
+
+.panel .subtitle {
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--color-muted);
+  margin-bottom: var(--spacing);
+}
+
+@media (max-width: 768px) {
+  .panel {
+    flex-basis: 100%;
+  }
+}

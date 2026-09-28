@@ -1,0 +1,19 @@
+/* src/components/Navbar.css */
+.navbar {
+  display: flex;
+  gap: 1rem;
+  background: var(--color-surface);
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius);
+}
+
+.navbar a {
+  color: var(--color-text);
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius);
+}
+
+.navbar a.active {
+  background: var(--color-primary);
+  color: #fff;
+}

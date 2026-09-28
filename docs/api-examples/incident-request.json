@@ -1,0 +1,6 @@
+{
+  "serviceName": "Checkout API",
+  "symptoms": "Latency increased from 200ms to 4 seconds, database connection timeouts",
+  "logs": "ERROR: Connection pool exhausted - timeout waiting for connection from HikariPool",
+  "severity": "SEV-1"
+}

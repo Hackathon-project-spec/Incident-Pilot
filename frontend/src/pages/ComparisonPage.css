@@ -1,0 +1,20 @@
+/* src/pages/ComparisonPage.css */
+.comparison-grid {
+  display: flex;
+  gap: var(--spacing);
+  margin-top: var(--spacing);
+}
+
+.panel {
+  flex: 1;
+  border: 1px solid var(--color-muted);
+  border-radius: var(--radius);
+  padding: var(--spacing);
+  background: var(--color-surface);
+}
+
+.panel h3 {
+  margin-top: 0;
+  color: var(--color-primary);
+  text-align: center;
+}
