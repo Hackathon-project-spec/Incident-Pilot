@@ -18,17 +18,23 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * LLM Client for IncidentPilot incident analysis and diagnosis.
+ * LLM Client for IncidentPilot incident analysis, diagnosis, and memory comparison.
  * 
- * STEP 4 & 5:
- * Builds prompt containing CURRENT INCIDENT + HISTORICAL MEMORY.
- * 
- * STRICT CONSTRAINTS:
- * - Must NOT execute commands.
- * - Must NOT claim that it performed a remediation.
- * - Must NOT fabricate historical information.
- * - If Hindsight returns [], tells LLM: "No relevant historical memory was found."
- * - When historical memory is provided, explicitly incorporates it into recommendations.
+ * CORE RESPONSIBILITIES (Person 3):
+ * 1. Combines CURRENT INCIDENT + HISTORICAL MEMORY (from Hindsight) into high-signal prompts.
+ * 2. Formats structured diagnosis output:
+ *    - root cause hypothesis (possibleRootCauses)
+ *    - investigation steps (investigationSteps)
+ *    - possible fixes (recommendedFixes)
+ *    - related past incidents (historicalIncidents)
+ *    - failed approaches to avoid (failedApproachesToAvoid)
+ *    - memory-based insights (memoryBasedInsights)
+ * 3. Enforces strict SRE guardrails:
+ *    - Never executes destructive commands.
+ *    - Never claims remediation has already been performed.
+ *    - Never fabricates historical incidents.
+ *    - Honestly reports when memory is absent ("No relevant historical memory was found.").
+ * 4. Resilient local fallback reasoning when LLM API keys are unconfigured.
  */
 @Slf4j
 @Component
@@ -44,12 +50,12 @@ public class LLMClient {
             @Value("${llm.base.url:${LLM_BASE_URL:https://api.openai.com/v1}}") String baseUrl,
             @Value("${llm.api.key:${LLM_API_KEY:}}") String apiKey,
             @Value("${llm.model:${LLM_MODEL:gpt-4o-mini}}") String model) {
-        this.apiKey = apiKey;
-        this.model = model;
+        this.apiKey = apiKey != null ? apiKey.trim() : "";
+        this.model = model != null && !model.isBlank() ? model.trim() : "gpt-4o-mini";
         this.objectMapper = new ObjectMapper();
         this.webClient = webClientBuilder
-                .baseUrl(baseUrl)
-                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey)
+                .baseUrl(baseUrl != null && !baseUrl.isBlank() ? baseUrl : "https://api.openai.com/v1")
+                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + this.apiKey)
                 .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
                 .build();
     }
@@ -65,66 +71,77 @@ public class LLMClient {
             String severity,
             List<String> recalledMemories) {
 
-        log.debug("Building LLM prompt and calling LLM for service='{}', severity='{}'", service, severity);
+        log.debug("Building LLM prompt for service='{}', severity='{}', memoryCount={}", 
+                service, severity, (recalledMemories != null ? recalledMemories.size() : 0));
 
-        boolean hasHistoricalMemory = (recalledMemories != null && !recalledMemories.isEmpty());
+        boolean hasHistoricalMemory = (recalledMemories != null && !recalledMemories.isEmpty()
+                && !recalledMemories.contains("No relevant historical incidents found."));
 
-        // STEP 4: Format HISTORICAL MEMORY
-        // If Hindsight returns [], tell the LLM: "No relevant historical memory was found."
-        // If Hindsight returns a previous incident, include it in the LLM context.
+        // STEP 4: Format HISTORICAL MEMORY context
         String historicalMemoryText;
         if (!hasHistoricalMemory) {
             historicalMemoryText = "No relevant historical memory was found.";
         } else {
             StringBuilder sb = new StringBuilder();
             for (String memory : recalledMemories) {
-                sb.append("- ").append(memory).append("\n");
+                if (memory != null && !memory.isBlank()) {
+                    sb.append("- ").append(memory.trim()).append("\n");
+                }
             }
-            historicalMemoryText = sb.toString().trim();
+            historicalMemoryText = sb.length() > 0 ? sb.toString().trim() : "No relevant historical memory was found.";
         }
 
-        // System prompt enforcing safety and output schema
-        String systemPrompt = "You are IncidentPilot, an expert Site Reliability Engineering (SRE) diagnostic AI.\n\n" +
-                "CORE RESPONSIBILITIES:\n" +
-                "1. Analyze the CURRENT INCIDENT alongside HISTORICAL MEMORY from past incidents.\n" +
-                "2. Explicitly reflect past learnings:\n" +
-                "   - If historical memory contains a previous incident, root cause, or successful fix, prioritize those learnings in possibleRootCauses and recommendedFixes.\n" +
-                "   - If historical memory contains failed approaches, explicitly advise against repeating those failed approaches (e.g. 'Check X before Y, which previously failed').\n" +
-                "   - In memoryBasedInsights, make it obvious whether and how historical memory influenced your recommendations.\n" +
-                "   - If HISTORICAL MEMORY states 'No relevant historical memory was found.', state clearly in memoryBasedInsights that no historical incident memory was available and this diagnosis is derived solely from current incident symptoms and logs.\n" +
-                "   - In historicalIncidents, list the relevant past incidents from memory, or set to ['No relevant historical incidents found.'] if no memory was found. DO NOT fabricate incidents.\n\n" +
-                "STRICT SAFETY & OPERATIONAL RULES:\n" +
-                "1. You must NOT execute commands or run scripts.\n" +
-                "2. You must NOT claim or state that you performed any remediation. All suggestions are recommendations for engineers.\n" +
-                "3. Output MUST be a single valid JSON object adhering strictly to the schema.";
+        // Tuned SRE System Prompt
+        String systemPrompt = "You are IncidentPilot, an expert Site Reliability Engineering (SRE) diagnostic AI assistant.\n\n" +
+                "PRIMARY OBJECTIVE:\n" +
+                "Diagnose live system incidents with high precision by synthesizing CURRENT INCIDENT telemetry with HISTORICAL MEMORY from past postmortems.\n\n" +
+                "DIAGNOSIS GUIDELINES:\n" +
+                "1. If HISTORICAL MEMORY contains past incidents, root causes, or proven fixes:\n" +
+                "   - Prioritize those verified learnings in 'possibleRootCauses' and 'recommendedFixes'.\n" +
+                "   - Populate 'failedApproachesToAvoid' with past failed attempts and explicitly instruct engineers why they failed (e.g. 'Do NOT increase connection pool size; in INC-DEMO-001 this masked the leak and exhausted DB resources').\n" +
+                "   - Populate 'historicalIncidents' with the matching past incidents.\n" +
+                "   - Detail in 'memoryBasedInsights' exactly how the recalled memory altered this diagnosis compared to a blind cold-start triage.\n" +
+                "   - Set 'confidenceScore' to 'HIGH (Memory-Correlated)'.\n\n" +
+                "2. If HISTORICAL MEMORY states 'No relevant historical memory was found.' or is empty:\n" +
+                "   - Perform first-principles telemetry diagnosis based strictly on the provided symptoms and logs.\n" +
+                "   - In 'historicalIncidents', return exactly [\"No relevant historical incidents found.\"].\n" +
+                "   - In 'memoryBasedInsights', state clearly: \"No relevant historical memory was found. Diagnosis is derived solely from current incident symptoms and logs without historical precedent.\"\n" +
+                "   - Set 'confidenceScore' to 'MEDIUM (First Principles)'.\n" +
+                "   - DO NOT fabricate past incidents, fake ticket IDs, or non-existent history.\n\n" +
+                "STRICT SAFETY RULES:\n" +
+                "1. You are an advisory AI. NEVER execute terminal commands or run scripts.\n" +
+                "2. NEVER claim or state that you performed a remediation (e.g. do not say 'I restarted the pods'). All recommendations are actionable suggestions for on-call engineers.\n" +
+                "3. Output MUST be a single valid JSON object adhering strictly to the required schema.";
 
-        // User prompt structured with CURRENT INCIDENT + HISTORICAL MEMORY
+        // Structured User Prompt
         String userPrompt = String.format(
-                "CURRENT INCIDENT:\n" +
-                "- service: %s\n" +
-                "- symptoms: %s\n" +
-                "- logs: %s\n" +
-                "- severity: %s\n\n" +
-                "HISTORICAL MEMORY:\n" +
+                "=== CURRENT INCIDENT TELEMETRY ===\n" +
+                "- Service: %s\n" +
+                "- Severity: %s\n" +
+                "- Symptoms: %s\n" +
+                "- Telemetry / Logs: %s\n\n" +
+                "=== HISTORICAL MEMORY CONTEXT ===\n" +
                 "%s\n\n" +
-                "Analyze the incident and return a JSON object with exactly these keys:\n" +
+                "Return a JSON object adhering to this exact schema:\n" +
                 "{\n" +
-                "  \"possibleRootCauses\": [\"...\"],\n" +
-                "  \"investigationSteps\": [\"...\"],\n" +
-                "  \"recommendedFixes\": [\"...\"],\n" +
-                "  \"historicalIncidents\": [\"...\"],\n" +
-                "  \"memoryBasedInsights\": [\"...\"]\n" +
+                "  \"possibleRootCauses\": [\"Hypothesis 1 with technical reasoning\", \"Hypothesis 2...\"],\n" +
+                "  \"investigationSteps\": [\"Step 1: Check metrics...\", \"Step 2: Inspect logs...\"],\n" +
+                "  \"recommendedFixes\": [\"Primary mitigation action...\", \"Alternative action...\"],\n" +
+                "  \"failedApproachesToAvoid\": [\"Anti-pattern or past failed approach to avoid...\"],\n" +
+                "  \"historicalIncidents\": [\"Incident ID / description or 'No relevant historical incidents found.'\"],\n" +
+                "  \"memoryBasedInsights\": [\"Detailed explanation of memory influence...\"],\n" +
+                "  \"confidenceScore\": \"HIGH (Memory-Correlated) | MEDIUM (First Principles) | LOW (Insufficient Data)\"\n" +
                 "}",
                 formatValue(service),
+                formatValue(severity),
                 formatValue(symptoms),
                 formatValue(logs),
-                formatValue(severity),
                 historicalMemoryText
         );
 
-        // Prototype / Fallback mode when API key is not configured
-        if (apiKey == null || apiKey.isBlank()) {
-            log.debug("LLM_API_KEY not configured. Generating prototype diagnosis from actual recalled memory.");
+        // Resilient Fallback if API key is not configured
+        if (apiKey.isBlank()) {
+            log.debug("LLM_API_KEY not configured. Generating prototype SRE diagnosis from actual recalled memory.");
             return generateFallbackResponse(service, severity, symptoms, logs, recalledMemories);
         }
 
@@ -132,7 +149,6 @@ public class LLMClient {
             Map<String, Object> requestBody = new LinkedHashMap<>();
             requestBody.put("model", model);
             requestBody.put("temperature", 0.1);
-            // Structured JSON output
             requestBody.put("response_format", Map.of("type", "json_object"));
             requestBody.put("messages", List.of(
                     Map.of("role", "system", "content", systemPrompt),
@@ -158,10 +174,10 @@ public class LLMClient {
                     }
                 }
             }
-            log.warn("Unexpected LLM response structure. Falling back to dynamic diagnosis.");
+            log.warn("Unexpected LLM response structure. Falling back to dynamic SRE reasoning.");
             return generateFallbackResponse(service, severity, symptoms, logs, recalledMemories);
         } catch (Exception e) {
-            log.error("LLM call failed: {}. Falling back to dynamic diagnosis.", e.getMessage());
+            log.error("LLM call failed ({}). Falling back to dynamic SRE reasoning.", e.getMessage());
             return generateFallbackResponse(service, severity, symptoms, logs, recalledMemories);
         }
     }
@@ -211,7 +227,7 @@ public class LLMClient {
     }
 
     /**
-     * Legacy Workflow 1 string diagnosis.
+     * Legacy string diagnosis method.
      */
     public String generateDiagnosis(String incidentDetails, List<String> recalledMemories) {
         IncidentAnalysisResponse response = analyzeIncident(
@@ -229,7 +245,7 @@ public class LLMClient {
     }
 
     /**
-     * Safely parse JSON returned by LLM.
+     * Safely parse JSON returned by LLM with field mapping & fault tolerance.
      */
     private IncidentAnalysisResponse parseJsonResponseSafely(
             String jsonText,
@@ -252,11 +268,14 @@ public class LLMClient {
 
             JsonNode root = objectMapper.readTree(cleaned);
 
-            List<String> rootCauses = extractList(root, "possibleRootCauses");
-            List<String> steps = extractList(root, "investigationSteps");
-            List<String> fixes = extractList(root, "recommendedFixes");
-            List<String> history = extractList(root, "historicalIncidents");
-            List<String> insights = extractList(root, "memoryBasedInsights");
+            List<String> rootCauses = extractList(root, "possibleRootCauses", "rootCauseHypothesis", "rootCauses");
+            List<String> steps = extractList(root, "investigationSteps", "steps", "investigation");
+            List<String> fixes = extractList(root, "recommendedFixes", "possibleFixes", "fixes", "mitigations");
+            List<String> history = extractList(root, "historicalIncidents", "relatedPastIncidents", "history");
+            List<String> insights = extractList(root, "memoryBasedInsights", "insights", "memoryInsights");
+            List<String> failedApproaches = extractList(root, "failedApproachesToAvoid", "failedApproaches", "avoid");
+
+            String confidence = root.has("confidenceScore") ? root.get("confidenceScore").asText() : null;
 
             if (history.isEmpty()) {
                 history = (recalledMemories != null && !recalledMemories.isEmpty())
@@ -272,21 +291,21 @@ public class LLMClient {
                     .recommendedFixes(fixes.isEmpty() ? List.of("Verify container health and configuration") : fixes)
                     .historicalIncidents(history)
                     .memoryBasedInsights(insights.isEmpty() ? List.of("Analysis completed based on telemetry.") : insights)
+                    .failedApproachesToAvoid(failedApproaches)
+                    .confidenceScore(confidence != null ? confidence : (recalledMemories != null && !recalledMemories.isEmpty() ? "HIGH (Memory-Correlated)" : "MEDIUM (First Principles)"))
                     .build();
         } catch (Exception e) {
-            log.warn("Failed to parse LLM JSON text: '{}'. Falling back to dynamic diagnosis.", jsonText);
+            log.warn("Failed to parse LLM JSON text: '{}'. Falling back to dynamic SRE reasoning.", jsonText);
             return generateFallbackResponse(service, severity, symptoms, logs, recalledMemories);
         }
     }
 
     /**
      * Dynamic SRE diagnostic reasoning based on the actual recalled memory:
-     * - Generates recommendations from the actual memory without hardcoding.
-     * - If memory has previous fix and failed approach, highlights both in recommendation.
+     * - Generates recommendations dynamically from actual memory without hardcoding.
+     * - Extracts successful fixes, failed approaches, root causes, and prevention strategies.
      * - If memory is empty, states clearly that no relevant historical memory was found.
-     * - Does NOT execute commands.
-     * - Does NOT claim remediation has been performed.
-     * - Does NOT fabricate historical incidents.
+     * - Strictly adheres to safety constraints: no commands, no remediation claims, no fabricated history.
      */
     private IncidentAnalysisResponse generateFallbackResponse(
             String service,
@@ -303,6 +322,7 @@ public class LLMClient {
         List<String> recommendedFixes = new ArrayList<>();
         List<String> historicalIncidents = new ArrayList<>();
         List<String> memoryBasedInsights = new ArrayList<>();
+        List<String> failedApproachesToAvoid = new ArrayList<>();
 
         if (!hasMemory) {
             historicalIncidents.add("No relevant historical incidents found.");
@@ -312,13 +332,17 @@ public class LLMClient {
 
             // Dynamically derive recommendations from the actual recalled memories
             for (String memory : recalledMemories) {
-                String successfulFix = extractPattern(memory, "successful fix:", "fix:", "resolved by:");
-                String failedApproach = extractPattern(memory, "failed approach:", "failed attempt:", "failed:");
-                String rootCause = extractPattern(memory, "caused by", "root cause:", "cause:");
-                String preventionLesson = extractPattern(memory, "lessons learned:", "prevention lessons:", "prevention:", "lesson:");
+                String successfulFix = extractPattern(memory, "successful fix:", "fix:", "resolved by:", "proven fix:");
+                String failedApproach = extractPattern(memory, "failed approach:", "failed attempt:", "failed:", "failed approaches:");
+                String rootCause = extractPattern(memory, "caused by:", "caused by", "root cause:", "cause:", "actual root cause:");
+                String preventionLesson = extractPattern(memory, "lessons learned:", "prevention lessons:", "prevention:", "lesson:", "prevention strategy:");
 
                 if (rootCause != null && !rootCause.isBlank()) {
                     rootCauses.add("Historical pattern: " + rootCause);
+                }
+
+                if (failedApproach != null && !failedApproach.isBlank()) {
+                    failedApproachesToAvoid.add("Avoid: " + failedApproach + " (recorded as an ineffective/counter-productive approach in past incident)");
                 }
 
                 if (successfulFix != null && failedApproach != null) {
@@ -344,35 +368,73 @@ public class LLMClient {
             }
         }
 
-        // Augment with symptoms/telemetry analysis
+        // Augment with telemetry & domain pattern recognition
         String combined = ((symptoms != null ? symptoms : "") + " " + (logs != null ? logs : "")).toLowerCase();
-        if (combined.contains("database") || combined.contains("timeout") || combined.contains("connection") || combined.contains("hikaripool")) {
+        
+        // Scenario 1: Connection pool & database timeouts
+        if (combined.contains("database") || combined.contains("timeout") || combined.contains("connection") || combined.contains("hikaripool") || combined.contains("leak")) {
             if (rootCauses.isEmpty()) {
                 rootCauses.add("Database connection pool exhaustion or high contention under load");
                 rootCauses.add("Downstream database unresponsiveness or slow queries holding transactions");
             }
-            investigationSteps.add("Check active versus idle connection pool metrics (e.g. HikariCP pool usage)");
+            investigationSteps.add("Check active versus idle connection pool metrics (e.g. HikariCP active connections / wait time)");
             investigationSteps.add("Inspect database slow query log and active lock waits");
+            investigationSteps.add("Verify connection lifecycle handling in application database access layer for unclosed connections");
             investigationSteps.add("Verify network connectivity and latency between " + service + " and database cluster");
 
             if (recommendedFixes.isEmpty()) {
+                recommendedFixes.add("Inspect connection lifecycle and ensure all database sessions are wrapped in try-with-resources");
                 recommendedFixes.add("Recommendation: Temporarily scale up connection pool maximum size if database capacity permits");
                 recommendedFixes.add("Recommendation: Terminate stuck long-running queries holding locks");
             }
-        } else if (combined.contains("certificate") || combined.contains("ssl") || combined.contains("tls") || combined.contains("handshake") || combined.contains("auth")) {
+        } 
+        // Scenario 2: Auth / Certificate / JWT / Token errors
+        else if (combined.contains("certificate") || combined.contains("ssl") || combined.contains("tls") || combined.contains("handshake") || combined.contains("auth") || combined.contains("jwt") || combined.contains("401") || combined.contains("jwks")) {
             if (rootCauses.isEmpty()) {
                 rootCauses.add("TLS/SSL certificate expiration or validation failure");
-                rootCauses.add("Authentication provider or identity service unreachable");
+                rootCauses.add("Authentication provider JWKS key rotation cache mismatch or token validation failure");
             }
             investigationSteps.add("Inspect TLS/SSL certificate validity and expiration dates across endpoints");
-            investigationSteps.add("Verify identity provider trust store and keystore configurations");
+            investigationSteps.add("Verify identity provider trust store, JWKS public key cache, and token signing configurations");
             investigationSteps.add("Check auth gateway connectivity and token validation logs");
 
             if (recommendedFixes.isEmpty()) {
+                recommendedFixes.add("Recommendation: Evict stale JWKS key cache and reload public signing keys");
                 recommendedFixes.add("Recommendation: Renew and rotate expired TLS/SSL certificates");
-                recommendedFixes.add("Recommendation: Verify certificate authorities and truststore entries");
             }
-        } else {
+        } 
+        // Scenario 3: Kafka / Consumer Lag / Poison Pill
+        else if (combined.contains("kafka") || combined.contains("consumer") || combined.contains("lag") || combined.contains("poison") || combined.contains("deserialization")) {
+            if (rootCauses.isEmpty()) {
+                rootCauses.add("Poison pill deserialization error causing infinite consumer retry loop");
+                rootCauses.add("Consumer partition rebalancing loop or processing thread starvation");
+            }
+            investigationSteps.add("Inspect Kafka consumer lag per partition and consumer group status");
+            investigationSteps.add("Check dead-letter queue (DLQ) metrics and deserialization exception stack traces");
+            investigationSteps.add("Verify offset commit behaviour under error conditions");
+
+            if (recommendedFixes.isEmpty()) {
+                recommendedFixes.add("Recommendation: Route unparseable poison pill messages to Dead Letter Queue (DLQ)");
+                recommendedFixes.add("Recommendation: Review producer schema serialization compatibility");
+            }
+        }
+        // Scenario 4: Thread Pool / Deadlock / Execution Rejection
+        else if (combined.contains("thread") || combined.contains("rejectedexecution") || combined.contains("deadlock") || combined.contains("worker")) {
+            if (rootCauses.isEmpty()) {
+                rootCauses.add("Worker thread pool exhaustion caused by blocking synchronous downstream I/O");
+                rootCauses.add("Thread deadlock on shared resource synchronization");
+            }
+            investigationSteps.add("Capture and analyze JVM thread dumps (jstack) to identify thread states (BLOCKED/WAITING)");
+            investigationSteps.add("Inspect executor queue depth and task rejection rate metrics");
+            investigationSteps.add("Trace downstream HTTP/RPC call timeouts within async tasks");
+
+            if (recommendedFixes.isEmpty()) {
+                recommendedFixes.add("Recommendation: Convert blocking downstream synchronous calls to non-blocking asynchronous clients with timeouts");
+                recommendedFixes.add("Recommendation: Apply circuit breaker to prevent cascading thread pool saturation");
+            }
+        }
+        // Scenario 5: General resource saturation
+        else {
             if (rootCauses.isEmpty()) {
                 rootCauses.add("Service resource saturation (CPU or memory starvation)");
                 rootCauses.add("Cascading downstream service dependency latency");
@@ -386,6 +448,8 @@ public class LLMClient {
             }
         }
 
+        String confidence = hasMemory ? "HIGH (Memory-Correlated)" : "MEDIUM (First Principles)";
+
         return IncidentAnalysisResponse.builder()
                 .serviceName(service)
                 .severity(severity)
@@ -394,6 +458,8 @@ public class LLMClient {
                 .recommendedFixes(recommendedFixes)
                 .historicalIncidents(historicalIncidents)
                 .memoryBasedInsights(memoryBasedInsights)
+                .failedApproachesToAvoid(failedApproachesToAvoid)
+                .confidenceScore(confidence)
                 .build();
     }
 
@@ -421,13 +487,17 @@ public class LLMClient {
         return null;
     }
 
-    private List<String> extractList(JsonNode root, String fieldName) {
-        if (root != null && root.has(fieldName) && root.get(fieldName).isArray()) {
-            List<String> list = new ArrayList<>();
-            for (JsonNode node : root.get(fieldName)) {
-                list.add(node.asText());
+    private List<String> extractList(JsonNode root, String... fieldNames) {
+        if (root != null) {
+            for (String fieldName : fieldNames) {
+                if (root.has(fieldName) && root.get(fieldName).isArray()) {
+                    List<String> list = new ArrayList<>();
+                    for (JsonNode node : root.get(fieldName)) {
+                        list.add(node.asText());
+                    }
+                    return list;
+                }
             }
-            return list;
         }
         return Collections.emptyList();
     }

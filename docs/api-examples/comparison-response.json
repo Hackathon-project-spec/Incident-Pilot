@@ -1,0 +1,70 @@
+{
+  "serviceName": "Checkout API",
+  "severity": "SEV-1",
+  "symptoms": "High latency and database connection timeouts",
+  "logs": "ERROR: Connection pool exhausted - timeout waiting for connection from HikariPool",
+  "recalledMemories": [
+    "Previous Checkout API incident (INC-DEMO-001) was caused by: Database connection leak in payment processing loop. Previous successful fix: Corrected connection lifecycle handling using try-with-resources. Previous failed approach: Increasing database connection pool size (HikariCP maxPoolSize). Lessons learned: Check connection lifecycle before increasing pool capacity."
+  ],
+  "withoutMemoryDiagnosis": {
+    "serviceName": "Checkout API",
+    "severity": "SEV-1",
+    "possibleRootCauses": [
+      "Database connection pool exhaustion or high contention under load",
+      "Downstream database unresponsiveness or slow queries holding transactions"
+    ],
+    "investigationSteps": [
+      "Check active versus idle connection pool metrics (e.g. HikariCP active connections / wait time)",
+      "Inspect database slow query log and active lock waits",
+      "Verify connection lifecycle handling in application database access layer for unclosed connections",
+      "Verify network connectivity and latency between Checkout API and database cluster"
+    ],
+    "recommendedFixes": [
+      "Inspect connection lifecycle and ensure all database sessions are wrapped in try-with-resources",
+      "Recommendation: Temporarily scale up connection pool maximum size if database capacity permits",
+      "Recommendation: Terminate stuck long-running queries holding locks"
+    ],
+    "historicalIncidents": [
+      "No relevant historical incidents found."
+    ],
+    "memoryBasedInsights": [
+      "No relevant historical memory was found. Diagnosis is based solely on current incident symptoms and logs without historical precedent."
+    ],
+    "failedApproachesToAvoid": [],
+    "confidenceScore": "MEDIUM (First Principles)"
+  },
+  "withMemoryDiagnosis": {
+    "serviceName": "Checkout API",
+    "severity": "SEV-1",
+    "possibleRootCauses": [
+      "Historical pattern: Database connection leak in payment processing loop"
+    ],
+    "investigationSteps": [
+      "Check active versus idle connection pool metrics (e.g. HikariCP active connections / wait time)",
+      "Inspect database slow query log and active lock waits",
+      "Verify connection lifecycle handling in application database access layer for unclosed connections"
+    ],
+    "recommendedFixes": [
+      "Check corrected connection lifecycle handling using try-with-resources before increasing database connection pool size (hikaricp maxpoolsize) (which previously failed in historical memory)."
+    ],
+    "historicalIncidents": [
+      "Previous Checkout API incident (INC-DEMO-001) was caused by: Database connection leak in payment processing loop. Previous successful fix: Corrected connection lifecycle handling using try-with-resources. Previous failed approach: Increasing database connection pool size (HikariCP maxPoolSize). Lessons learned: Check connection lifecycle before increasing pool capacity."
+    ],
+    "memoryBasedInsights": [
+      "Historical memory directly influenced recommendation: Prioritizing proven fix ('Corrected connection lifecycle handling using try-with-resources') and cautioning against previously failed approach ('Increasing database connection pool size (HikariCP maxPoolSize)').",
+      "Historical lesson applied: Check connection lifecycle before increasing pool capacity"
+    ],
+    "failedApproachesToAvoid": [
+      "Avoid: Increasing database connection pool size (HikariCP maxPoolSize) (recorded as an ineffective/counter-productive approach in past incident)"
+    ],
+    "confidenceScore": "HIGH (Memory-Correlated)"
+  },
+  "comparisonHighlights": [
+    "Root Cause Precision: Shifted from generic speculative causes to exact historical root cause pattern.",
+    "Prevented Costly Anti-Patterns: Explicitly warned against Avoid: Increasing database connection pool size (HikariCP maxPoolSize) (recorded as an ineffective/counter-productive approach in past incident)",
+    "Targeted Resolution: Prioritized proven fix from previous postmortem to minimize MTTR.",
+    "Institutional Lineage: Linked directly to 1 correlated past incident(s)."
+  ],
+  "memoryAdvantageDemonstrated": true,
+  "summary": "Memory-augmented diagnosis successfully identified proven historical fixes and warned against past failed approaches, drastically reducing MTTR."
+}
